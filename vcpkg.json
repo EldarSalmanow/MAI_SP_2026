@@ -1,0 +1,12 @@
+{
+  "name" : "mai-sp-2026",
+  "version-string" : "1.0.0",
+  "builtin-baseline" : "57987637aac17d62bac535bc839baca3754490e6",
+  "dependencies" : [ {
+    "name" : "boost-container",
+    "version>=" : "1.90.0#1"
+  }, {
+    "name" : "boost-system",
+    "version>=" : "1.90.0#1"
+  } ]
+}
