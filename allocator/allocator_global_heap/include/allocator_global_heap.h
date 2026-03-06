@@ -16,20 +16,14 @@ private:
 public:
     
     explicit allocator_global_heap();
-    
+
+    allocator_global_heap(allocator_global_heap const &other) = delete;
+
+    allocator_global_heap(allocator_global_heap &&other) noexcept = delete;
+
+public:
+
     ~allocator_global_heap() override;
-    
-    allocator_global_heap(
-        allocator_global_heap const &other);
-    
-    allocator_global_heap &operator=(
-        allocator_global_heap const &other);
-    
-    allocator_global_heap(
-        allocator_global_heap &&other) noexcept;
-    
-    allocator_global_heap &operator=(
-        allocator_global_heap &&other) noexcept;
 
 private:
     
@@ -41,6 +35,15 @@ private:
 
     bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override;
 
+public:
+
+    allocator_global_heap &operator=(allocator_global_heap const &other);
+
+    allocator_global_heap &operator=(allocator_global_heap &&other) noexcept;
+
+private:
+
+    std::mutex global_heap_mutex_;
 };
 
 #endif //MATH_PRACTICE_AND_OPERATING_SYSTEMS_ALLOCATOR_ALLOCATOR_GLOBAL_HEAP_H
