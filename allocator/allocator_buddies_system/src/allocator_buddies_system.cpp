@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include "../include/allocator_buddies_system.h"
 
+
 std::uint8_t *byte_ptr(void *ptr) noexcept {
     return reinterpret_cast<std::uint8_t *>(ptr);
 }
@@ -70,11 +71,19 @@ public:
     }
 };
 
+void destroy_allocator(void *&memory) noexcept {
+    if (!memory) return;
+
+    control_block control(memory);
+    control.mutex().~mutex();
+    control.parent()->deallocate(memory, control_block::metadata_size + control.arena_size());
+    memory = nullptr;
+}
+
 allocator_buddies_system::allocator_buddies_system(
     size_t space_size,
     std::pmr::memory_resource *parent_allocator,
-    allocator_with_fit_mode::fit_mode allocate_fit_mode)
-{
+    allocator_with_fit_mode::fit_mode allocate_fit_mode) {
     if (space_size < (static_cast<size_t>(1) << min_k)) {
         throw std::logic_error("Space size is too small");
     }
@@ -100,8 +109,7 @@ allocator_buddies_system::allocator_buddies_system(
 }
 
 allocator_buddies_system::allocator_buddies_system(const allocator_buddies_system &other)
-    : _trusted_memory(nullptr)
-{
+    : _trusted_memory(nullptr) {
     if (!other._trusted_memory) return;
 
     control_block source(other._trusted_memory);
@@ -121,27 +129,29 @@ allocator_buddies_system::allocator_buddies_system(const allocator_buddies_syste
     std::memcpy(target.arena(), source.arena(), source.arena_size());
 }
 
-allocator_buddies_system &allocator_buddies_system::operator=(const allocator_buddies_system &other)
-{
-    if (this == &other) return *this;
-    return *this = allocator_buddies_system(other);
+allocator_buddies_system &allocator_buddies_system::operator=(const allocator_buddies_system &other) {
+    if (this == &other) {
+        return *this;
+    }
+
+    auto copy = allocator_buddies_system(other);
+
+    *this = std::move(copy);
+
+    return *this;
 }
 
 allocator_buddies_system::allocator_buddies_system(allocator_buddies_system &&other) noexcept
-    : _trusted_memory(other._trusted_memory)
-{
+    : _trusted_memory(other._trusted_memory) {
     other._trusted_memory = nullptr;
 }
 
-allocator_buddies_system &allocator_buddies_system::operator=(allocator_buddies_system &&other) noexcept
-{
-    if (this == &other) return *this;
-
-    if (_trusted_memory) {
-        control_block control(_trusted_memory);
-        control.mutex().~mutex();
-        control.parent()->deallocate(_trusted_memory, control_block::metadata_size + control.arena_size());
+allocator_buddies_system &allocator_buddies_system::operator=(allocator_buddies_system &&other) noexcept {
+    if (this == &other) {
+        return *this;
     }
+
+    destroy_allocator(_trusted_memory);
 
     _trusted_memory = other._trusted_memory;
     other._trusted_memory = nullptr;
@@ -149,17 +159,11 @@ allocator_buddies_system &allocator_buddies_system::operator=(allocator_buddies_
     return *this;
 }
 
-allocator_buddies_system::~allocator_buddies_system()
-{
-    if (!_trusted_memory) return;
-
-    control_block control(_trusted_memory);
-    control.mutex().~mutex();
-    control.parent()->deallocate(_trusted_memory, control_block::metadata_size + control.arena_size());
+allocator_buddies_system::~allocator_buddies_system() {
+    destroy_allocator(_trusted_memory);
 }
 
-[[nodiscard]] void *allocator_buddies_system::do_allocate_sm(size_t size)
-{
+[[nodiscard]] void *allocator_buddies_system::do_allocate_sm(size_t size) {
     control_block control(_trusted_memory);
     std::lock_guard<std::mutex> lock(control.mutex());
 
@@ -183,8 +187,10 @@ allocator_buddies_system::~allocator_buddies_system()
             continue;
         }
 
-        if ((mode == fit_mode::the_best_fit && block_power < best_power) ||
-            (mode == fit_mode::the_worst_fit && block_power > best_power)) {
+        if (mode == fit_mode::the_best_fit && block_power < best_power) {
+            best_block = *it;
+            best_power = block_power;
+        } else if (mode == fit_mode::the_worst_fit && block_power > best_power) {
             best_block = *it;
             best_power = block_power;
         }
@@ -196,8 +202,7 @@ allocator_buddies_system::~allocator_buddies_system()
         best_power--;
         size_t buddy_offset = static_cast<size_t>(1) << best_power;
 
-        block_header left(best_block);
-        left.set_power(best_power);
+        block_header(best_block).set_power(best_power);
 
         block_header right(byte_ptr(best_block) + buddy_offset);
         right.set_occupied(false);
@@ -211,8 +216,7 @@ allocator_buddies_system::~allocator_buddies_system()
     return result.payload();
 }
 
-void allocator_buddies_system::do_deallocate_sm(void *at)
-{
+void allocator_buddies_system::do_deallocate_sm(void *at) {
     if (!at) return;
 
     control_block control(_trusted_memory);
@@ -242,41 +246,37 @@ void allocator_buddies_system::do_deallocate_sm(void *at)
     }
 }
 
-bool allocator_buddies_system::do_is_equal(const std::pmr::memory_resource &other) const noexcept
-{
+bool allocator_buddies_system::do_is_equal(const std::pmr::memory_resource &other) const noexcept {
     return typeid(*this) == typeid(other);
 }
 
-void allocator_buddies_system::set_fit_mode(allocator_with_fit_mode::fit_mode mode)
-{
+void allocator_buddies_system::set_fit_mode(allocator_with_fit_mode::fit_mode mode) {
     control_block control(_trusted_memory);
     std::lock_guard<std::mutex> lock(control.mutex());
     control.fit_mode() = mode;
 }
 
-std::vector<allocator_test_utils::block_info> allocator_buddies_system::get_blocks_info() const noexcept
-{
+std::vector<allocator_test_utils::block_info> allocator_buddies_system::get_blocks_info() const noexcept {
     control_block control(_trusted_memory);
     std::lock_guard<std::mutex> lock(control.mutex());
     return get_blocks_info_inner();
 }
 
-std::vector<allocator_test_utils::block_info> allocator_buddies_system::get_blocks_info_inner() const
-{
+std::vector<allocator_test_utils::block_info> allocator_buddies_system::get_blocks_info_inner() const {
     std::vector<allocator_test_utils::block_info> result;
-    for (auto it = begin(); it != end(); ++it) {
-        result.push_back({it.size(), it.occupied()});
+
+    for (auto iterator = begin(); iterator != end(); ++iterator) {
+        result.push_back({iterator.size(), iterator.occupied()});
     }
+    
     return result;
 }
 
-allocator_buddies_system::buddy_iterator allocator_buddies_system::begin() const noexcept
-{
+allocator_buddies_system::buddy_iterator allocator_buddies_system::begin() const noexcept {
     return buddy_iterator(_trusted_memory);
 }
 
-allocator_buddies_system::buddy_iterator allocator_buddies_system::end() const noexcept
-{
+allocator_buddies_system::buddy_iterator allocator_buddies_system::end() const noexcept {
     return buddy_iterator();
 }
 
@@ -286,47 +286,45 @@ allocator_buddies_system::buddy_iterator::buddy_iterator()
 allocator_buddies_system::buddy_iterator::buddy_iterator(void *memory)
     : _block(memory ? control_block(memory).arena() : nullptr), _memory(memory) {}
 
-bool allocator_buddies_system::buddy_iterator::operator==(const buddy_iterator &other) const noexcept
-{
+bool allocator_buddies_system::buddy_iterator::operator==(const buddy_iterator &other) const noexcept {
     return _block == other._block;
 }
 
-bool allocator_buddies_system::buddy_iterator::operator!=(const buddy_iterator &other) const noexcept
-{
+bool allocator_buddies_system::buddy_iterator::operator!=(const buddy_iterator &other) const noexcept {
     return _block != other._block;
 }
 
-allocator_buddies_system::buddy_iterator &allocator_buddies_system::buddy_iterator::operator++() & noexcept
-{
-    if (!_block || !_memory) return *this;
+allocator_buddies_system::buddy_iterator &allocator_buddies_system::buddy_iterator::operator++() & noexcept {
+    if (!_block || !_memory) {
+        return *this;
+    }
 
+    control_block control(_memory);
     size_t block_size = static_cast<size_t>(1) << block_header(_block).power();
     std::uint8_t *next_block = byte_ptr(_block) + block_size;
-    std::uint8_t *arena_end = control_block(_memory).arena() + control_block(_memory).arena_size();
+    std::uint8_t *arena_end = control.arena() + control.arena_size();
 
     _block = (next_block >= arena_end) ? nullptr : next_block;
 
     return *this;
 }
 
-allocator_buddies_system::buddy_iterator allocator_buddies_system::buddy_iterator::operator++(int)
-{
+allocator_buddies_system::buddy_iterator allocator_buddies_system::buddy_iterator::operator++(int) {
     auto copy = *this;
+
     ++(*this);
+    
     return copy;
 }
 
-size_t allocator_buddies_system::buddy_iterator::size() const noexcept
-{
+size_t allocator_buddies_system::buddy_iterator::size() const noexcept {
     return _block ? (static_cast<size_t>(1) << block_header(_block).power()) : 0;
 }
 
-bool allocator_buddies_system::buddy_iterator::occupied() const noexcept
-{
+bool allocator_buddies_system::buddy_iterator::occupied() const noexcept {
     return _block && block_header(_block).occupied();
 }
 
-void *allocator_buddies_system::buddy_iterator::operator*() const noexcept
-{
+void *allocator_buddies_system::buddy_iterator::operator*() const noexcept {
     return _block;
 }
