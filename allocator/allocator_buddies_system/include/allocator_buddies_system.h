@@ -37,6 +37,8 @@ class allocator_buddies_system final:
 
 private:
 
+    friend class control_block;
+    friend class block_header;
 
     struct block_metadata
     {
@@ -104,6 +106,7 @@ private:
     class buddy_iterator
     {
         void* _block;
+        void* _memory;
 
     public:
 
@@ -129,7 +132,7 @@ private:
 
         buddy_iterator();
 
-        buddy_iterator(void* start);
+        buddy_iterator(void* memory);
     };
 
     friend class buddy_iterator;
