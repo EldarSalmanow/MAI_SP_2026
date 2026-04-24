@@ -6,7 +6,6 @@
 #include <allocator_with_fit_mode.h>
 #include <cstdint>
 #include <iterator>
-#include <mutex>
 
 
 class allocator_sorted_list final :
@@ -25,12 +24,13 @@ private:
         sorted_free_iterator() noexcept;
         explicit sorted_free_iterator(void *free_block) noexcept;
 
+        size_t size() const noexcept;
+
         bool operator==(const sorted_free_iterator &other) const noexcept;
         bool operator!=(const sorted_free_iterator &other) const noexcept;
         sorted_free_iterator &operator++() noexcept;
         sorted_free_iterator operator++(int);
 
-        size_t size() const noexcept;
         void *operator*() const noexcept;
 
     private:
@@ -48,13 +48,14 @@ private:
         sorted_iterator() noexcept;
         explicit sorted_iterator(void *memory) noexcept;
 
+        size_t size() const noexcept;
+        bool occupied() const noexcept;
+
         bool operator==(const sorted_iterator &other) const noexcept;
         bool operator!=(const sorted_iterator &other) const noexcept;
         sorted_iterator &operator++() noexcept;
         sorted_iterator operator++(int);
 
-        size_t size() const noexcept;
-        bool occupied() const noexcept;
         void *operator*() const noexcept;
 
     private:
