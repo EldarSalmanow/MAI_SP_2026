@@ -176,24 +176,24 @@ bool allocator_boundary_tags::boundary_iterator::operator!=(const boundary_itera
 }
 
 allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_iterator::operator++() & noexcept {
-    if (_occupied_ptr) {
-        block_view current(_occupied_ptr);
-        _occupied_ptr = current.next();
-        if (_occupied_ptr) {
-            _occupied = block_view(_occupied_ptr).is_occupied();
-        }
+    if (!_occupied_ptr) {
+        return *this;
     }
+
+    _occupied_ptr = block_view(_occupied_ptr).next();
+    _occupied = _occupied_ptr && block_view(_occupied_ptr).is_occupied();
+
     return *this;
 }
 
 allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_iterator::operator--() & noexcept {
-    if (_occupied_ptr) {
-        block_view current(_occupied_ptr);
-        _occupied_ptr = current.prev();
-        if (_occupied_ptr) {
-            _occupied = block_view(_occupied_ptr).is_occupied();
-        }
+    if (!_occupied_ptr) {
+        return *this;
     }
+
+    _occupied_ptr = block_view(_occupied_ptr).prev();
+    _occupied = _occupied_ptr && block_view(_occupied_ptr).is_occupied();
+
     return *this;
 }
 
