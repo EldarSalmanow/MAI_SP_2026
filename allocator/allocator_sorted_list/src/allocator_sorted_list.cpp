@@ -5,96 +5,97 @@
 #include "../include/allocator_sorted_list.h"
 
 
-inline std::uint8_t *byte_ptr(void *ptr) noexcept {
+std::uint8_t *byte_ptr(void *ptr) noexcept {
     return reinterpret_cast<std::uint8_t *>(ptr);
 }
 
-inline const std::uint8_t *byte_ptr(const void *ptr) noexcept {
+const std::uint8_t *byte_ptr(const void *ptr) noexcept {
     return reinterpret_cast<const std::uint8_t *>(ptr);
 }
 
 class block_view {
 public:
-    explicit block_view(void *block) noexcept : block_(block) {}
+    static constexpr size_t next_offset = 0;
+    static constexpr size_t size_offset = sizeof(void *);
+    static constexpr size_t metadata_size = sizeof(void *) + sizeof(size_t);
 
-    [[nodiscard]] void *raw() const noexcept {
+public:
+    explicit block_view(void *block) noexcept
+            : block_(block) {}
+
+public:
+    static block_view from_payload(void *payload) noexcept {
+        return block_view(byte_ptr(payload) - metadata_size);
+    }
+
+public:
+    void *raw() const noexcept {
         return block_;
     }
 
-    [[nodiscard]] void *&next() const noexcept {
+    void *&next() const noexcept {
         return *reinterpret_cast<void **>(byte_ptr(block_) + next_offset);
     }
 
-    [[nodiscard]] size_t &size() const noexcept {
+    size_t &size() const noexcept {
         return *reinterpret_cast<size_t *>(byte_ptr(block_) + size_offset);
     }
 
-    [[nodiscard]] void *payload() const noexcept {
-        return byte_ptr(block_) + header_size();
+    void *payload() const noexcept {
+        return byte_ptr(block_) + metadata_size;
     }
 
-    [[nodiscard]] bool is_adjacent_to(block_view other) const noexcept {
+    bool is_adjacent_to(block_view other) const noexcept {
         return byte_ptr(payload()) + size() == byte_ptr(other.raw());
     }
 
-    [[nodiscard]] static block_view from_payload(void *payload) noexcept {
-        return block_view(byte_ptr(payload) - header_size());
-    }
-
-    [[nodiscard]] static constexpr size_t header_size() noexcept {
-        return sizeof(void *) + sizeof(size_t);
-    }
-
 private:
-    static constexpr size_t next_offset = 0;
-    static constexpr size_t size_offset = sizeof(void *);
-
     void *block_;
 };
 
 class control_block_view {
 public:
-    explicit control_block_view(void *memory) : memory_(memory) {}
-
-    [[nodiscard]] std::pmr::memory_resource *&parent_allocator() const noexcept {
-        return *reinterpret_cast<std::pmr::memory_resource **>(byte_ptr(memory_) + parent_allocator_offset);
-    }
-
-    [[nodiscard]] allocator_with_fit_mode::fit_mode &fit_mode() const noexcept {
-        return *reinterpret_cast<allocator_with_fit_mode::fit_mode *>(byte_ptr(memory_) + fit_mode_offset);
-    }
-
-    [[nodiscard]] size_t &space_size() const noexcept {
-        return *reinterpret_cast<size_t *>(byte_ptr(memory_) + space_size_offset);
-    }
-
-    [[nodiscard]] std::mutex &mutex() const noexcept {
-        return *reinterpret_cast<std::mutex *>(byte_ptr(memory_) + mutex_offset);
-    }
-
-    [[nodiscard]] void *&free_head() const noexcept {
-        return *reinterpret_cast<void **>(byte_ptr(memory_) + free_head_offset);
-    }
-
-    [[nodiscard]] std::uint8_t *arena_begin() const noexcept {
-        return byte_ptr(memory_) + metadata_size();
-    }
-
-    [[nodiscard]] std::uint8_t *arena_end() const noexcept {
-        return arena_begin() + space_size();
-    }
-
-    [[nodiscard]] static constexpr size_t metadata_size() noexcept {
-        return free_head_offset + sizeof(void *);
-    }
-
-private:
     static constexpr size_t parent_allocator_offset = 0;
     static constexpr size_t fit_mode_offset = parent_allocator_offset + sizeof(std::pmr::memory_resource *);
     static constexpr size_t space_size_offset = fit_mode_offset + sizeof(allocator_with_fit_mode::fit_mode);
     static constexpr size_t mutex_offset = space_size_offset + sizeof(size_t);
     static constexpr size_t free_head_offset = mutex_offset + sizeof(std::mutex);
+    static constexpr size_t metadata_size = free_head_offset + sizeof(void *);
 
+public:
+    explicit control_block_view(void *memory) noexcept
+            : memory_(memory) {}
+
+public:
+    std::pmr::memory_resource *&parent_allocator() const noexcept {
+        return *reinterpret_cast<std::pmr::memory_resource **>(byte_ptr(memory_) + parent_allocator_offset);
+    }
+
+    allocator_with_fit_mode::fit_mode &fit_mode() const noexcept {
+        return *reinterpret_cast<allocator_with_fit_mode::fit_mode *>(byte_ptr(memory_) + fit_mode_offset);
+    }
+
+    size_t &space_size() const noexcept {
+        return *reinterpret_cast<size_t *>(byte_ptr(memory_) + space_size_offset);
+    }
+
+    std::mutex &mutex() const noexcept {
+        return *reinterpret_cast<std::mutex *>(byte_ptr(memory_) + mutex_offset);
+    }
+
+    void *&free_head() const noexcept {
+        return *reinterpret_cast<void **>(byte_ptr(memory_) + free_head_offset);
+    }
+
+    std::uint8_t *arena_begin() const noexcept {
+        return byte_ptr(memory_) + metadata_size;
+    }
+
+    std::uint8_t *arena_end() const noexcept {
+        return arena_begin() + space_size();
+    }
+
+private:
     void *memory_;
 };
 
@@ -108,7 +109,7 @@ void destroy_storage(void *&memory) noexcept {
     control.mutex().~mutex();
 
     auto *parent = control.parent_allocator();
-    parent->deallocate(memory, control_block_view::metadata_size() + control.space_size(), alignof(std::max_align_t));
+    parent->deallocate(memory, control_block_view::metadata_size + control.space_size(), alignof(std::max_align_t));
 
     memory = nullptr;
 }
@@ -129,10 +130,10 @@ void *create_storage(size_t space_size,
     new(&control.mutex()) std::mutex();
     control.free_head() = nullptr;
 
-    if (space_size >= block_view::header_size()) {
+    if (space_size >= block_view::metadata_size()) {
         block_view first(control.arena_begin());
         first.next() = nullptr;
-        first.size() = space_size - block_view::header_size();
+        first.size() = space_size - block_view::metadata_size();
 
         control.free_head() = first.raw();
     }
@@ -140,9 +141,11 @@ void *create_storage(size_t space_size,
     return memory;
 }
 
-allocator_sorted_list::sorted_free_iterator::sorted_free_iterator() noexcept : free_block_(nullptr) {}
+allocator_sorted_list::sorted_free_iterator::sorted_free_iterator() noexcept
+        : free_block_(nullptr) {}
 
-allocator_sorted_list::sorted_free_iterator::sorted_free_iterator(void *free_block) noexcept : free_block_(free_block) {}
+allocator_sorted_list::sorted_free_iterator::sorted_free_iterator(void *free_block) noexcept
+        : free_block_(free_block) {}
 
 bool allocator_sorted_list::sorted_free_iterator::operator==(const sorted_free_iterator &other) const noexcept {
     return free_block_ == other.free_block_;
@@ -169,7 +172,11 @@ allocator_sorted_list::sorted_free_iterator allocator_sorted_list::sorted_free_i
 }
 
 size_t allocator_sorted_list::sorted_free_iterator::size() const noexcept {
-    return free_block_ ? block_view(free_block_).size() : 0;
+    if (!free_block_) {
+        return 0;
+    }
+
+    return block_view(free_block_).size();
 }
 
 void *allocator_sorted_list::sorted_free_iterator::operator*() const noexcept {
@@ -186,7 +193,8 @@ allocator_sorted_list::sorted_iterator::sorted_iterator(void *memory) noexcept
     }
 
     control_block_view control(memory);
-    if (control.space_size() < block_view::header_size()) {
+
+    if (control.space_size() < block_view::metadata_size()) {
         return;
     }
 
@@ -214,7 +222,7 @@ allocator_sorted_list::sorted_iterator &allocator_sorted_list::sorted_iterator::
 
     void *old = current_block_;
     block_view current(current_block_);
-    current_block_ = byte_ptr(current_block_) + block_view::header_size() + current.size();
+    current_block_ = byte_ptr(current_block_) + block_view::metadata_size() + current.size();
     if (next_free_block_ == old) {
         next_free_block_ = block_view(next_free_block_).next();
     }
@@ -241,7 +249,11 @@ allocator_sorted_list::sorted_iterator allocator_sorted_list::sorted_iterator::o
 }
 
 size_t allocator_sorted_list::sorted_iterator::size() const noexcept {
-    return current_block_ ? block_view(current_block_).size() : 0;
+    if (!current_block_) {
+        return 0;
+    }
+
+    return block_view(current_block_).size();
 }
 
 bool allocator_sorted_list::sorted_iterator::occupied() const noexcept {
@@ -291,7 +303,8 @@ allocator_sorted_list::allocator_sorted_list(const allocator_sorted_list &other)
     }
 }
 
-allocator_sorted_list::allocator_sorted_list(allocator_sorted_list &&other) noexcept : memory_(other.memory_) {
+allocator_sorted_list::allocator_sorted_list(allocator_sorted_list &&other) noexcept
+        : memory_(other.memory_) {
     other.memory_ = nullptr;
 }
 
@@ -303,9 +316,10 @@ allocator_sorted_list::~allocator_sorted_list() {
     control_block_view control(memory_);
     std::lock_guard lock(control.mutex());
 
-    void *selected      = nullptr;
+    void *selected = nullptr;
     void *selected_prev = nullptr;
-    void *prev          = nullptr;
+    void *prev = nullptr;
+
     for (void *cur = control.free_head(); cur; prev = cur, cur = block_view(cur).next()) {
         const auto cur_size = block_view(cur).size();
 
@@ -323,7 +337,7 @@ allocator_sorted_list::~allocator_sorted_list() {
             continue;
         }
 
-        selected      = cur;
+        selected = cur;
         selected_prev = prev;
 
         if (control.fit_mode() == fit_mode::first_fit) {
@@ -336,12 +350,13 @@ allocator_sorted_list::~allocator_sorted_list() {
     }
 
     block_view selected_block(selected);
-    void *next               = selected_block.next();
+    void *next = selected_block.next();
     const auto selected_size = selected_block.size();
-    if (selected_size >= size + block_view::header_size() + 1) {
-        block_view remaining(byte_ptr(selected) + block_view::header_size() + size);
-        remaining.next()      = next;
-        remaining.size()      = selected_size - size - block_view::header_size();
+
+    if (selected_size >= size + block_view::metadata_size() + 1) {
+        block_view remaining(byte_ptr(selected) + block_view::metadata_size() + size);
+        remaining.next() = next;
+        remaining.size() = selected_size - size - block_view::metadata_size();
         selected_block.size() = size;
         selected_block.next() = nullptr;
 
@@ -370,31 +385,30 @@ void allocator_sorted_list::do_deallocate_sm(void *at) {
     std::lock_guard lock(control.mutex());
 
     block_view block = block_view::from_payload(at);
-    void *prev_ptr   = nullptr;
-    void *cur_ptr    = control.free_head();
+
+    void *prev_ptr = nullptr;
+    void *cur_ptr = control.free_head();
     while (cur_ptr && byte_ptr(cur_ptr) < byte_ptr(block.raw())) {
         prev_ptr = cur_ptr;
-        cur_ptr  = block_view(cur_ptr).next();
+        cur_ptr = block_view(cur_ptr).next();
     }
 
     block.next() = cur_ptr;
     if (prev_ptr) {
         block_view(prev_ptr).next() = block.raw();
-    }
-    else {
+    } else {
         control.free_head() = block.raw();
     }
 
     if (cur_ptr && block.is_adjacent_to(block_view(cur_ptr))) {
-        block.size() += block_view::header_size() + block_view(cur_ptr).size();
+        block.size() += block_view::metadata_size() + block_view(cur_ptr).size();
         block.next() = block_view(cur_ptr).next();
     }
-    if (prev_ptr) {
+
+    if (prev_ptr && block_view(prev_ptr).is_adjacent_to(block)) {
         block_view prev(prev_ptr);
-        if (prev.is_adjacent_to(block)) {
-            prev.size() += block_view::header_size() + block.size();
-            prev.next() = block.next();
-        }
+        prev.size() += block_view::metadata_size() + block.size();
+        prev.next() = block.next();
     }
 }
 
@@ -439,7 +453,11 @@ std::vector<allocator_test_utils::block_info> allocator_sorted_list::get_blocks_
 }
 
 allocator_sorted_list::sorted_free_iterator allocator_sorted_list::free_begin() const noexcept {
-    return memory_ ? sorted_free_iterator(control_block_view(memory_).free_head()) : sorted_free_iterator();
+    if (!memory_) {
+        return sorted_free_iterator();
+    }
+
+    return sorted_free_iterator(control_block_view(memory_).free_head());
 }
 
 allocator_sorted_list::sorted_free_iterator allocator_sorted_list::free_end() const noexcept {
