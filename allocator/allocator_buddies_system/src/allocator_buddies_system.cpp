@@ -234,51 +234,55 @@ allocator_buddies_system::~allocator_buddies_system() {
     }
 
     while (best_power > required_power) {
-        best_power--;
-        
-        size_t buddy_offset = static_cast<size_t>(1) << best_power;
+        --best_power;
+        size_t half_size = static_cast<size_t>(1) << best_power;
 
-        block_header(best_block).set_power(best_power);
+        block_header left(best_block);
+        left.set_power(best_power);
 
-        block_header right(byte_ptr(best_block) + buddy_offset);
+        block_header right(byte_ptr(best_block) + half_size);
         right.set_occupied(false);
         right.set_power(best_power);
     }
 
-    block_header result(best_block);
-    result.set_occupied(true);
-    result.set_power(best_power);
+    block_header(best_block).set_occupied(true);
 
-    return result.payload();
+    return block_header(best_block).payload();
 }
 
 void allocator_buddies_system::do_deallocate_sm(void *at) {
-    if (!at) return;
+    if (!at) {
+        return;
+    }
 
     control_block control(_trusted_memory);
+    
     std::lock_guard<std::mutex> lock(control.mutex());
 
     block_header block = block_header::from_payload(at);
     block.set_occupied(false);
 
     std::uint8_t *arena = control.arena();
-    size_t arena_size = control.arena_size();
 
     while (block.power() < control.power()) {
         size_t block_size = static_cast<size_t>(1) << block.power();
         size_t block_offset = byte_ptr(block.raw()) - arena;
         size_t buddy_offset = block_offset ^ block_size;
 
-        if (buddy_offset >= arena_size) break;
+        if (buddy_offset >= control.arena_size()) {
+            break;
+        }
 
         block_header buddy(arena + buddy_offset);
-        if (buddy.occupied() || buddy.power() != block.power()) break;
 
-        unsigned char new_power = block.power() + 1;
-        void *left = block_offset < buddy_offset ? block.raw() : buddy.raw();
-        block = block_header(left);
+        if (buddy.occupied() || buddy.power() != block.power()) {
+            break;
+        }
+
+        void *merged = (block_offset < buddy_offset) ? block.raw() : buddy.raw();
+        block = block_header(merged);
         block.set_occupied(false);
-        block.set_power(new_power);
+        block.set_power(block.power() + 1);
     }
 }
 
@@ -288,13 +292,17 @@ bool allocator_buddies_system::do_is_equal(const std::pmr::memory_resource &othe
 
 void allocator_buddies_system::set_fit_mode(allocator_with_fit_mode::fit_mode mode) {
     control_block control(_trusted_memory);
+
     std::lock_guard<std::mutex> lock(control.mutex());
+    
     control.fit_mode() = mode;
 }
 
 std::vector<allocator_test_utils::block_info> allocator_buddies_system::get_blocks_info() const noexcept {
     control_block control(_trusted_memory);
+    
     std::lock_guard<std::mutex> lock(control.mutex());
+    
     return get_blocks_info_inner();
 }
 
@@ -327,7 +335,7 @@ bool allocator_buddies_system::buddy_iterator::operator==(const buddy_iterator &
 }
 
 bool allocator_buddies_system::buddy_iterator::operator!=(const buddy_iterator &other) const noexcept {
-    return _block != other._block;
+    return !(*this == other);
 }
 
 allocator_buddies_system::buddy_iterator &allocator_buddies_system::buddy_iterator::operator++() & noexcept {
@@ -354,7 +362,11 @@ allocator_buddies_system::buddy_iterator allocator_buddies_system::buddy_iterato
 }
 
 size_t allocator_buddies_system::buddy_iterator::size() const noexcept {
-    return _block ? (static_cast<size_t>(1) << block_header(_block).power()) : 0;
+    if (!_block) {
+        return 0;
+    }
+
+    return static_cast<size_t>(1) << block_header(_block).power();
 }
 
 bool allocator_buddies_system::buddy_iterator::occupied() const noexcept {
