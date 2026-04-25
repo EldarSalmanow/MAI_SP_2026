@@ -110,20 +110,6 @@ private:
     void *memory_;
 };
 
-void destroy_storage(void *&memory) noexcept {
-    if (!memory) {
-        return;
-    }
-
-    control_block_view control(memory);
-    control.mutex().~mutex();
-
-    auto *parent = control.parent_allocator();
-    parent->deallocate(memory, control_block_view::metadata_size + control.space_size());
-
-    memory = nullptr;
-}
-
 void *create_storage(size_t space_size,
                      std::pmr::memory_resource *parent,
                      allocator_with_fit_mode::fit_mode fit) {
@@ -153,18 +139,32 @@ void *create_storage(size_t space_size,
     return memory;
 }
 
+void destroy_storage(void *&memory) noexcept {
+    if (!memory) {
+        return;
+    }
+
+    control_block_view control(memory);
+    control.mutex().~mutex();
+
+    auto *parent = control.parent_allocator();
+    parent->deallocate(memory, control_block_view::metadata_size + control.space_size());
+
+    memory = nullptr;
+}
+
 allocator_boundary_tags::boundary_iterator::boundary_iterator()
     : _occupied_ptr(nullptr), _occupied(false), _trusted_memory(nullptr) {}
 
 allocator_boundary_tags::boundary_iterator::boundary_iterator(void *trusted)
     : _occupied_ptr(nullptr), _occupied(false), _trusted_memory(trusted) {
-    if (trusted) {
-        control_block_view control(trusted);
-        _occupied_ptr = control.first_block();
-        if (_occupied_ptr) {
-            _occupied = block_view(_occupied_ptr).is_occupied();
-        }
+    if (!trusted) {
+        return;
     }
+    
+    control_block_view control(trusted);
+    _occupied_ptr = control.first_block();
+    _occupied = _occupied_ptr && block_view(_occupied_ptr).is_occupied();
 }
 
 bool allocator_boundary_tags::boundary_iterator::operator==(const boundary_iterator &other) const noexcept {
@@ -199,13 +199,17 @@ allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_it
 
 allocator_boundary_tags::boundary_iterator allocator_boundary_tags::boundary_iterator::operator++(int) {
     auto copy = *this;
+
     ++(*this);
+    
     return copy;
 }
 
 allocator_boundary_tags::boundary_iterator allocator_boundary_tags::boundary_iterator::operator--(int) {
     auto copy = *this;
+    
     --(*this);
+    
     return copy;
 }
 
@@ -213,6 +217,7 @@ size_t allocator_boundary_tags::boundary_iterator::size() const noexcept {
     if (!_occupied_ptr) {
         return 0;
     }
+
     return block_view(_occupied_ptr).size();
 }
 
@@ -240,6 +245,7 @@ allocator_boundary_tags::allocator_boundary_tags(const allocator_boundary_tags &
     }
 
     auto *other_memory = const_cast<void *>(other._trusted_memory);
+
     control_block_view source(other_memory);
 
     std::lock_guard lock(source.mutex());
@@ -247,15 +253,18 @@ allocator_boundary_tags::allocator_boundary_tags(const allocator_boundary_tags &
     _trusted_memory = create_storage(source.space_size(), source.parent_allocator(), source.fit_mode());
 
     control_block_view target(_trusted_memory);
+
     std::memcpy(target.arena_begin(), source.arena_begin(), source.space_size());
 
     std::ptrdiff_t offset = target.arena_begin() - source.arena_begin();
 
-    for (auto it = boundary_iterator(_trusted_memory); it != boundary_iterator(); ++it) {
-        block_view block(*it);
+    for (auto iterator = boundary_iterator(_trusted_memory); iterator != boundary_iterator(); ++iterator) {
+        block_view block(*iterator);
+
         if (block.prev()) {
             block.prev() = byte_ptr(block.prev()) + offset;
         }
+        
         if (block.next()) {
             block.next() = byte_ptr(block.next()) + offset;
         }
@@ -282,12 +291,12 @@ allocator_boundary_tags::~allocator_boundary_tags() {
 
     boundary_iterator selected = end();
 
-    for (auto it = begin(); it != end(); ++it) {
-        if (it.occupied()) {
+    for (auto iterator = begin(); iterator != end(); ++iterator) {
+        if (iterator.occupied()) {
             continue;
         }
 
-        const auto current_size = it.size();
+        const auto current_size = iterator.size();
 
         if (current_size < size) {
             continue;
@@ -304,7 +313,7 @@ allocator_boundary_tags::~allocator_boundary_tags() {
             continue;
         }
 
-        selected = it;
+        selected = iterator;
 
         if (control.fit_mode() == fit_mode::first_fit) {
             break;
@@ -397,8 +406,8 @@ std::vector<allocator_test_utils::block_info> allocator_boundary_tags::get_block
 std::vector<allocator_test_utils::block_info> allocator_boundary_tags::get_blocks_info_inner() const {
     std::vector<allocator_test_utils::block_info> result;
 
-    for (auto it = begin(); it != end(); ++it) {
-        result.push_back({it.size() + block_view::metadata_size, it.occupied()});
+    for (auto iterator = begin(); iterator != end(); ++iterator) {
+        result.push_back({iterator.size() + block_view::metadata_size, iterator.occupied()});
     }
 
     return result;
@@ -418,6 +427,7 @@ allocator_boundary_tags &allocator_boundary_tags::operator=(const allocator_boun
     }
 
     allocator_boundary_tags copy(other);
+    
     *this = std::move(copy);
 
     return *this;
