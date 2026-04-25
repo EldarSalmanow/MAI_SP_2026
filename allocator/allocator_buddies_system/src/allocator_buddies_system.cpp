@@ -47,10 +47,9 @@ public:
 };
 
 class block_header {
-    void *block_;
-
 public:
-    explicit block_header(void *block) noexcept : block_(block) {}
+    explicit block_header(void *block) noexcept
+            : block_(block) {}
 
     static block_header from_payload(void *payload) noexcept {
         return block_header(byte_ptr(payload) - allocator_buddies_system::occupied_block_metadata_size);
@@ -60,23 +59,44 @@ public:
         return *static_cast<allocator_buddies_system::block_metadata *>(block_);
     }
 
-    bool occupied() const noexcept { return metadata().occupied; }
-    void set_occupied(bool value) noexcept { metadata().occupied = value; }
-    unsigned char power() const noexcept { return metadata().size; }
-    void set_power(unsigned char value) noexcept { metadata().size = value; }
-    void *raw() const noexcept { return block_; }
+    bool occupied() const noexcept {
+        return metadata().occupied;
+    }
+
+    void set_occupied(bool value) noexcept {
+        metadata().occupied = value;
+    }
+    
+    unsigned char power() const noexcept {
+        return metadata().size;
+    }
+    
+    void set_power(unsigned char value) noexcept {
+        metadata().size = value;
+    }
+    
+    void *raw() const noexcept {
+        return block_;
+    }
 
     void *payload() const noexcept {
         return byte_ptr(block_) + allocator_buddies_system::occupied_block_metadata_size;
     }
+
+private:
+    void *block_;
 };
 
 void destroy_allocator(void *&memory) noexcept {
-    if (!memory) return;
+    if (!memory) {
+        return;
+    }
 
     control_block control(memory);
+
     control.mutex().~mutex();
     control.parent()->deallocate(memory, control_block::metadata_size + control.arena_size());
+
     memory = nullptr;
 }
 
@@ -110,9 +130,12 @@ allocator_buddies_system::allocator_buddies_system(
 
 allocator_buddies_system::allocator_buddies_system(const allocator_buddies_system &other)
     : _trusted_memory(nullptr) {
-    if (!other._trusted_memory) return;
+    if (!other._trusted_memory) {
+        return;
+    }
 
     control_block source(other._trusted_memory);
+
     std::lock_guard<std::mutex> lock(source.mutex());
 
     auto *parent = source.parent();
@@ -168,38 +191,51 @@ allocator_buddies_system::~allocator_buddies_system() {
     std::lock_guard<std::mutex> lock(control.mutex());
 
     size_t required_power = __detail::nearest_greater_k_of_2(size + occupied_block_metadata_size);
-    if (required_power < min_k) required_power = min_k;
+
+    if (required_power < min_k) {
+        required_power = min_k;
+    }
 
     void *best_block = nullptr;
     unsigned char best_power = 0;
-    auto mode = control.fit_mode();
 
-    for (auto it = begin(); it != end(); ++it) {
-        if (it.occupied()) continue;
-
-        unsigned char block_power = block_header(*it).power();
-        if (block_power < required_power) continue;
-
-        if (!best_block) {
-            best_block = *it;
-            best_power = block_power;
-            if (mode == fit_mode::first_fit) break;
+    for (auto iterator = begin(); iterator != end(); ++iterator) {
+        if (iterator.occupied()) {
             continue;
         }
 
-        if (mode == fit_mode::the_best_fit && block_power < best_power) {
-            best_block = *it;
-            best_power = block_power;
-        } else if (mode == fit_mode::the_worst_fit && block_power > best_power) {
-            best_block = *it;
-            best_power = block_power;
+        unsigned char block_power = block_header(*iterator).power();
+
+        if (block_power < required_power) {
+            continue;
+        }
+
+        bool is_better = false;
+
+        is_better |= !best_block;
+        is_better |= control.fit_mode() == fit_mode::first_fit;
+        is_better |= control.fit_mode() == fit_mode::the_best_fit && block_power < best_power;
+        is_better |= control.fit_mode() == fit_mode::the_worst_fit && block_power > best_power;
+
+        if (!is_better) {
+            continue;
+        }
+
+        best_block = *iterator;
+        best_power = block_power;
+
+        if (control.fit_mode() == fit_mode::first_fit) {
+            break;
         }
     }
 
-    if (!best_block) throw std::bad_alloc();
+    if (!best_block) {
+        throw std::bad_alloc();
+    }
 
     while (best_power > required_power) {
         best_power--;
+        
         size_t buddy_offset = static_cast<size_t>(1) << best_power;
 
         block_header(best_block).set_power(best_power);
