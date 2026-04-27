@@ -462,7 +462,7 @@ B_tree<tkey, tvalue, compare, t>::B_tree(B_tree&& other) noexcept
         : compare(static_cast<compare &&>(other)), 
           _allocator(), 
           _root(nullptr), 
-          _size(0) {}
+          _size(0)
 {
     std::swap(_allocator, other._allocator);
     std::swap(_root, other._root);
