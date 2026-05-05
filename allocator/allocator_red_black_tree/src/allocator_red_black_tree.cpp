@@ -1,35 +1,76 @@
 #include <cstring>
 #include <new>
 #include <typeinfo>
-#include <cstdint>
-
 #include "../include/allocator_red_black_tree.h"
 
-namespace {
-
-// Utility functions
-inline std::uint8_t *byte_ptr(void *ptr) noexcept {
-    return static_cast<std::uint8_t *>(ptr);
+std::uint8_t *byte_ptr(void *ptr) noexcept {
+    return reinterpret_cast<std::uint8_t *>(ptr);
 }
 
-inline const std::uint8_t *byte_ptr(const void *ptr) noexcept {
-    return static_cast<const std::uint8_t *>(ptr);
+const std::uint8_t *byte_ptr(const void *ptr) noexcept {
+    return reinterpret_cast<const std::uint8_t *>(ptr);
 }
 
-template <typename T>
-T read_at(const void *base, size_t offset) noexcept {
-    T value;
-    std::memcpy(&value, byte_ptr(base) + offset, sizeof(T));
-    return value;
-}
+enum class rb_color : std::uint8_t { red = 0, black = 1 };
 
-template <typename T>
-void write_at(void *base, size_t offset, const T &value) noexcept {
-    std::memcpy(byte_ptr(base) + offset, &value, sizeof(T));
-}
+class block_view {
+    void *memory_;
 
-// Control block layout and access
-class control_block {
+    static constexpr size_t data_offset = 0;
+    static constexpr size_t size_offset = data_offset + sizeof(std::uint8_t);
+    static constexpr size_t left_offset = size_offset + sizeof(size_t);
+    static constexpr size_t right_offset = left_offset + sizeof(void *);
+    static constexpr size_t parent_offset = right_offset + sizeof(void *);
+    static constexpr size_t next_offset = parent_offset + sizeof(void *);
+
+public:
+    static constexpr size_t occupied_meta_size = size_offset + sizeof(size_t) + 2 * sizeof(void *);
+    static constexpr size_t free_meta_size = next_offset + sizeof(void *);
+
+    explicit block_view(void *memory) noexcept : memory_(memory) {}
+
+    void *raw() const noexcept { return memory_; }
+
+    std::uint8_t &data() const noexcept {
+        return *reinterpret_cast<std::uint8_t *>(byte_ptr(memory_) + data_offset);
+    }
+
+    bool occupied() const noexcept { return (data() & 0x0F) != 0; }
+    void set_occupied(bool value) noexcept { data() = (data() & 0xF0) | (value ? 1 : 0); }
+
+    rb_color color() const noexcept { return static_cast<rb_color>((data() >> 4) & 0x0F); }
+    void set_color(rb_color value) noexcept { data() = (data() & 0x0F) | (static_cast<std::uint8_t>(value) << 4); }
+
+    size_t &size() const noexcept {
+        return *reinterpret_cast<size_t *>(byte_ptr(memory_) + size_offset);
+    }
+
+    void *&left() const noexcept {
+        return *reinterpret_cast<void **>(byte_ptr(memory_) + left_offset);
+    }
+
+    void *&right() const noexcept {
+        return *reinterpret_cast<void **>(byte_ptr(memory_) + right_offset);
+    }
+
+    void *&parent() const noexcept {
+        return *reinterpret_cast<void **>(byte_ptr(memory_) + parent_offset);
+    }
+
+    void *&next() const noexcept {
+        return *reinterpret_cast<void **>(byte_ptr(memory_) + next_offset);
+    }
+
+    void *payload() const noexcept {
+        return byte_ptr(memory_) + occupied_meta_size;
+    }
+
+    static block_view from_payload(void *payload) noexcept {
+        return block_view(byte_ptr(payload) - occupied_meta_size);
+    }
+};
+
+class control_block_view {
     void *memory_;
 
     static constexpr size_t parent_allocator_offset = 0;
@@ -41,7 +82,7 @@ class control_block {
 public:
     static constexpr size_t metadata_size = root_offset + sizeof(void *);
 
-    explicit control_block(void *memory) noexcept : memory_(memory) {}
+    explicit control_block_view(void *memory) noexcept : memory_(memory) {}
 
     std::pmr::memory_resource *&parent_allocator() const noexcept {
         return *reinterpret_cast<std::pmr::memory_resource **>(byte_ptr(memory_) + parent_allocator_offset);
@@ -72,203 +113,95 @@ public:
     }
 };
 
-// Block metadata layout and access
-enum class rb_color : std::uint8_t { red = 0, black = 1 };
-
-class block {
-    void *memory_;
-
-    static constexpr size_t data_offset = 0;
-    static constexpr size_t size_offset = data_offset + sizeof(std::uint8_t);
-    static constexpr size_t left_offset = size_offset + sizeof(size_t);
-    static constexpr size_t right_offset = left_offset + sizeof(void *);
-    static constexpr size_t parent_offset = right_offset + sizeof(void *);
-    static constexpr size_t next_offset = parent_offset + sizeof(void *);
-
-public:
-    static constexpr size_t occupied_meta_size = size_offset + sizeof(size_t) + 2 * sizeof(void *);
-    static constexpr size_t free_meta_size = next_offset + sizeof(void *);
-
-    explicit block(void *memory) noexcept : memory_(memory) {}
-
-    std::uint8_t data() const noexcept {
-        return read_at<std::uint8_t>(memory_, data_offset);
-    }
-
-    void set_data(std::uint8_t value) const noexcept {
-        write_at(memory_, data_offset, value);
-    }
-
-    bool occupied() const noexcept {
-        return (data() & 0x0F) != 0;
-    }
-
-    void set_occupied(bool value) const noexcept {
-        set_data((data() & 0xF0) | (value ? 1 : 0));
-    }
-
-    rb_color color() const noexcept {
-        return static_cast<rb_color>((data() >> 4) & 0x0F);
-    }
-
-    void set_color(rb_color value) const noexcept {
-        set_data((data() & 0x0F) | (static_cast<std::uint8_t>(value) << 4));
-    }
-
-    size_t size() const noexcept {
-        return read_at<size_t>(memory_, size_offset);
-    }
-
-    void set_size(size_t value) const noexcept {
-        write_at(memory_, size_offset, value);
-    }
-
-    void *left() const noexcept {
-        return read_at<void *>(memory_, left_offset);
-    }
-
-    void set_left(void *value) const noexcept {
-        write_at(memory_, left_offset, value);
-    }
-
-    void *right() const noexcept {
-        return read_at<void *>(memory_, right_offset);
-    }
-
-    void set_right(void *value) const noexcept {
-        write_at(memory_, right_offset, value);
-    }
-
-    void *parent() const noexcept {
-        return read_at<void *>(memory_, parent_offset);
-    }
-
-    void set_parent(void *value) const noexcept {
-        write_at(memory_, parent_offset, value);
-    }
-
-    void *next() const noexcept {
-        return read_at<void *>(memory_, next_offset);
-    }
-
-    void set_next(void *value) const noexcept {
-        write_at(memory_, next_offset, value);
-    }
-
-    void *payload() const noexcept {
-        return byte_ptr(memory_) + occupied_meta_size;
-    }
-
-    void *raw() const noexcept {
-        return memory_;
-    }
-
-    static block from_payload(void *payload) noexcept {
-        return block(byte_ptr(payload) - occupied_meta_size);
-    }
-};
-
-// Red-Black Tree operations
 inline bool is_red(void *node) noexcept {
-    return node && block(node).color() == rb_color::red;
+    return node && block_view(node).color() == rb_color::red;
 }
 
 inline void set_color(void *node, rb_color color) noexcept {
-    if (node) block(node).set_color(color);
+    if (node) block_view(node).set_color(color);
 }
 
-inline void *left_of(void *node) noexcept {
-    return node ? block(node).left() : nullptr;
-}
+void rotate_left(control_block_view &ctrl, void *x) noexcept {
+    block_view bx(x);
+    void *y = bx.right();
+    block_view by(y);
 
-inline void *right_of(void *node) noexcept {
-    return node ? block(node).right() : nullptr;
-}
+    bx.right() = by.left();
+    if (by.left()) block_view(by.left()).parent() = x;
 
-inline void *parent_of(void *node) noexcept {
-    return node ? block(node).parent() : nullptr;
-}
-
-void rotate_left(control_block &ctrl, void *x) noexcept {
-    void *y = right_of(x);
-    block bx(x), by(y);
-
-    bx.set_right(left_of(y));
-    if (left_of(y)) block(left_of(y)).set_parent(x);
-
-    by.set_parent(parent_of(x));
-    if (!parent_of(x)) {
+    by.parent() = bx.parent();
+    if (!bx.parent()) {
         ctrl.root() = y;
-    } else if (x == left_of(parent_of(x))) {
-        block(parent_of(x)).set_left(y);
+    } else if (x == block_view(bx.parent()).left()) {
+        block_view(bx.parent()).left() = y;
     } else {
-        block(parent_of(x)).set_right(y);
+        block_view(bx.parent()).right() = y;
     }
 
-    by.set_left(x);
-    bx.set_parent(y);
+    by.left() = x;
+    bx.parent() = y;
 }
 
-void rotate_right(control_block &ctrl, void *x) noexcept {
-    void *y = left_of(x);
-    block bx(x), by(y);
+void rotate_right(control_block_view &ctrl, void *x) noexcept {
+    block_view bx(x);
+    void *y = bx.left();
+    block_view by(y);
 
-    bx.set_left(right_of(y));
-    if (right_of(y)) block(right_of(y)).set_parent(x);
+    bx.left() = by.right();
+    if (by.right()) block_view(by.right()).parent() = x;
 
-    by.set_parent(parent_of(x));
-    if (!parent_of(x)) {
+    by.parent() = bx.parent();
+    if (!bx.parent()) {
         ctrl.root() = y;
-    } else if (x == right_of(parent_of(x))) {
-        block(parent_of(x)).set_right(y);
+    } else if (x == block_view(bx.parent()).right()) {
+        block_view(bx.parent()).right() = y;
     } else {
-        block(parent_of(x)).set_left(y);
+        block_view(bx.parent()).left() = y;
     }
 
-    by.set_right(x);
-    bx.set_parent(y);
+    by.right() = x;
+    bx.parent() = y;
 }
 
-void insert_fixup(control_block &ctrl, void *z) noexcept {
-    while (is_red(parent_of(z))) {
-        void *parent = parent_of(z);
-        void *grandparent = parent_of(parent);
+void insert_fixup(control_block_view &ctrl, void *z) noexcept {
+    while (is_red(block_view(z).parent())) {
+        block_view bz(z);
+        void *parent = bz.parent();
+        block_view bp(parent);
+        void *grandparent = bp.parent();
+        block_view bg(grandparent);
 
-        if (parent == left_of(grandparent)) {
-            void *uncle = right_of(grandparent);
+        if (parent == bg.left()) {
+            void *uncle = bg.right();
             if (is_red(uncle)) {
                 set_color(parent, rb_color::black);
                 set_color(uncle, rb_color::black);
                 set_color(grandparent, rb_color::red);
                 z = grandparent;
             } else {
-                if (z == right_of(parent)) {
+                if (z == bp.right()) {
                     z = parent;
                     rotate_left(ctrl, z);
-                    parent = parent_of(z);
-                    grandparent = parent_of(parent);
                 }
-                set_color(parent, rb_color::black);
-                set_color(grandparent, rb_color::red);
-                rotate_right(ctrl, grandparent);
+                set_color(block_view(z).parent(), rb_color::black);
+                set_color(block_view(block_view(z).parent()).parent(), rb_color::red);
+                rotate_right(ctrl, block_view(block_view(z).parent()).parent());
             }
         } else {
-            void *uncle = left_of(grandparent);
+            void *uncle = bg.left();
             if (is_red(uncle)) {
                 set_color(parent, rb_color::black);
                 set_color(uncle, rb_color::black);
                 set_color(grandparent, rb_color::red);
                 z = grandparent;
             } else {
-                if (z == left_of(parent)) {
+                if (z == bp.left()) {
                     z = parent;
                     rotate_right(ctrl, z);
-                    parent = parent_of(z);
-                    grandparent = parent_of(parent);
                 }
-                set_color(parent, rb_color::black);
-                set_color(grandparent, rb_color::red);
-                rotate_left(ctrl, grandparent);
+                set_color(block_view(z).parent(), rb_color::black);
+                set_color(block_view(block_view(z).parent()).parent(), rb_color::red);
+                rotate_left(ctrl, block_view(block_view(z).parent()).parent());
             }
         }
     }
@@ -276,148 +209,151 @@ void insert_fixup(control_block &ctrl, void *z) noexcept {
 }
 
 bool less_block(void *lhs, void *rhs) noexcept {
-    const auto lhs_size = block(lhs).size();
-    const auto rhs_size = block(rhs).size();
+    const auto lhs_size = block_view(lhs).size();
+    const auto rhs_size = block_view(rhs).size();
     return lhs_size != rhs_size ? lhs_size < rhs_size
                                 : reinterpret_cast<std::uintptr_t>(lhs) < reinterpret_cast<std::uintptr_t>(rhs);
 }
 
-void insert_node(control_block &ctrl, void *node) noexcept {
+void insert_node(control_block_view &ctrl, void *node) noexcept {
     void *parent = nullptr;
     void *current = ctrl.root();
 
     while (current) {
         parent = current;
-        current = less_block(node, current) ? left_of(current) : right_of(current);
+        current = less_block(node, current) ? block_view(current).left() : block_view(current).right();
     }
 
-    block bn(node);
-    bn.set_parent(parent);
-    bn.set_left(nullptr);
-    bn.set_right(nullptr);
+    block_view bn(node);
+    bn.parent() = parent;
+    bn.left() = nullptr;
+    bn.right() = nullptr;
     bn.set_color(rb_color::red);
 
     if (!parent) {
         ctrl.root() = node;
     } else if (less_block(node, parent)) {
-        block(parent).set_left(node);
+        block_view(parent).left() = node;
     } else {
-        block(parent).set_right(node);
+        block_view(parent).right() = node;
     }
 
     insert_fixup(ctrl, node);
 }
 
-void transplant(control_block &ctrl, void *u, void *v) noexcept {
-    if (!parent_of(u)) {
+void transplant(control_block_view &ctrl, void *u, void *v) noexcept {
+    block_view bu(u);
+    if (!bu.parent()) {
         ctrl.root() = v;
-    } else if (u == left_of(parent_of(u))) {
-        block(parent_of(u)).set_left(v);
+    } else if (u == block_view(bu.parent()).left()) {
+        block_view(bu.parent()).left() = v;
     } else {
-        block(parent_of(u)).set_right(v);
+        block_view(bu.parent()).right() = v;
     }
-    if (v) block(v).set_parent(parent_of(u));
+    if (v) block_view(v).parent() = bu.parent();
 }
 
 void *tree_min(void *node) noexcept {
-    while (node && left_of(node)) {
-        node = left_of(node);
+    while (node && block_view(node).left()) {
+        node = block_view(node).left();
     }
     return node;
 }
 
-void delete_fixup(control_block &ctrl, void *x, void *x_parent) noexcept {
+void delete_fixup(control_block_view &ctrl, void *x, void *x_parent) noexcept {
     while (x != ctrl.root() && !is_red(x)) {
-        if (x == left_of(x_parent)) {
-            void *w = right_of(x_parent);
+        if (x == block_view(x_parent).left()) {
+            void *w = block_view(x_parent).right();
             if (is_red(w)) {
                 set_color(w, rb_color::black);
                 set_color(x_parent, rb_color::red);
                 rotate_left(ctrl, x_parent);
-                w = right_of(x_parent);
+                w = block_view(x_parent).right();
             }
-            if (!is_red(left_of(w)) && !is_red(right_of(w))) {
+            if (!is_red(block_view(w).left()) && !is_red(block_view(w).right())) {
                 set_color(w, rb_color::red);
                 x = x_parent;
-                x_parent = parent_of(x_parent);
+                x_parent = block_view(x_parent).parent();
             } else {
-                if (!is_red(right_of(w))) {
-                    set_color(left_of(w), rb_color::black);
+                if (!is_red(block_view(w).right())) {
+                    set_color(block_view(w).left(), rb_color::black);
                     set_color(w, rb_color::red);
                     rotate_right(ctrl, w);
-                    w = right_of(x_parent);
+                    w = block_view(x_parent).right();
                 }
-                set_color(w, block(x_parent).color());
+                set_color(w, block_view(x_parent).color());
                 set_color(x_parent, rb_color::black);
-                set_color(right_of(w), rb_color::black);
+                set_color(block_view(w).right(), rb_color::black);
                 rotate_left(ctrl, x_parent);
                 x = ctrl.root();
-                x_parent = parent_of(x);
+                x_parent = block_view(x).parent();
             }
         } else {
-            void *w = left_of(x_parent);
+            void *w = block_view(x_parent).left();
             if (is_red(w)) {
                 set_color(w, rb_color::black);
                 set_color(x_parent, rb_color::red);
                 rotate_right(ctrl, x_parent);
-                w = left_of(x_parent);
+                w = block_view(x_parent).left();
             }
-            if (!is_red(left_of(w)) && !is_red(right_of(w))) {
+            if (!is_red(block_view(w).left()) && !is_red(block_view(w).right())) {
                 set_color(w, rb_color::red);
                 x = x_parent;
-                x_parent = parent_of(x_parent);
+                x_parent = block_view(x_parent).parent();
             } else {
-                if (!is_red(left_of(w))) {
-                    set_color(right_of(w), rb_color::black);
+                if (!is_red(block_view(w).left())) {
+                    set_color(block_view(w).right(), rb_color::black);
                     set_color(w, rb_color::red);
                     rotate_left(ctrl, w);
-                    w = left_of(x_parent);
+                    w = block_view(x_parent).left();
                 }
-                set_color(w, block(x_parent).color());
+                set_color(w, block_view(x_parent).color());
                 set_color(x_parent, rb_color::black);
-                set_color(left_of(w), rb_color::black);
+                set_color(block_view(w).left(), rb_color::black);
                 rotate_right(ctrl, x_parent);
                 x = ctrl.root();
-                x_parent = parent_of(x);
+                x_parent = block_view(x).parent();
             }
         }
     }
     set_color(x, rb_color::black);
 }
 
-void delete_node(control_block &ctrl, void *z) noexcept {
+void delete_node(control_block_view &ctrl, void *z) noexcept {
+    block_view bz(z);
     void *y = z;
-    auto y_original_color = block(y).color();
+    auto y_original_color = bz.color();
     void *x = nullptr;
     void *x_parent = nullptr;
 
-    if (!left_of(z)) {
-        x = right_of(z);
-        x_parent = parent_of(z);
+    if (!bz.left()) {
+        x = bz.right();
+        x_parent = bz.parent();
         transplant(ctrl, z, x);
-    } else if (!right_of(z)) {
-        x = left_of(z);
-        x_parent = parent_of(z);
+    } else if (!bz.right()) {
+        x = bz.left();
+        x_parent = bz.parent();
         transplant(ctrl, z, x);
     } else {
-        y = tree_min(right_of(z));
-        y_original_color = block(y).color();
-        x = right_of(y);
+        y = tree_min(bz.right());
+        block_view by(y);
+        y_original_color = by.color();
+        x = by.right();
 
-        if (parent_of(y) == z) {
+        if (by.parent() == z) {
             x_parent = y;
-            if (x) block(x).set_parent(y);
+            if (x) block_view(x).parent() = y;
         } else {
-            x_parent = parent_of(y);
+            x_parent = by.parent();
             transplant(ctrl, y, x);
-            block(y).set_right(right_of(z));
-            block(right_of(z)).set_parent(y);
+            by.right() = bz.right();
+            block_view(bz.right()).parent() = y;
         }
 
         transplant(ctrl, z, y);
-        block(y).set_left(left_of(z));
-        block(left_of(z)).set_parent(y);
-        block(y).set_color(block(z).color());
+        by.left() = bz.left();
+        block_view(bz.left()).parent() = y;
+        by.set_color(bz.color());
     }
 
     if (y_original_color == rb_color::black) {
@@ -426,23 +362,24 @@ void delete_node(control_block &ctrl, void *z) noexcept {
 }
 
 void *tree_successor(void *node) noexcept {
-    if (right_of(node)) {
-        return tree_min(right_of(node));
+    block_view bn(node);
+    if (bn.right()) {
+        return tree_min(bn.right());
     }
 
-    void *parent = parent_of(node);
-    while (parent && node == right_of(parent)) {
+    void *parent = bn.parent();
+    while (parent && node == block_view(parent).right()) {
         node = parent;
-        parent = parent_of(parent);
+        parent = block_view(parent).parent();
     }
     return parent;
 }
 
-void *find_block(control_block &ctrl, size_t required_size, allocator_with_fit_mode::fit_mode mode) noexcept {
+void *find_block(control_block_view &ctrl, size_t required_size, allocator_with_fit_mode::fit_mode mode) noexcept {
     void *candidate = nullptr;
 
     for (void *node = tree_min(ctrl.root()); node; node = tree_successor(node)) {
-        const auto size = block(node).size();
+        const auto size = block_view(node).size();
         if (size < required_size) continue;
 
         if (!candidate) {
@@ -451,9 +388,9 @@ void *find_block(control_block &ctrl, size_t required_size, allocator_with_fit_m
             continue;
         }
 
-        if (mode == allocator_with_fit_mode::fit_mode::the_best_fit && size < block(candidate).size()) {
+        if (mode == allocator_with_fit_mode::fit_mode::the_best_fit && size < block_view(candidate).size()) {
             candidate = node;
-        } else if (mode == allocator_with_fit_mode::fit_mode::the_worst_fit && size > block(candidate).size()) {
+        } else if (mode == allocator_with_fit_mode::fit_mode::the_worst_fit && size > block_view(candidate).size()) {
             candidate = node;
         }
     }
@@ -464,25 +401,25 @@ void *find_block(control_block &ctrl, size_t required_size, allocator_with_fit_m
 void *create_storage(size_t space_size, std::pmr::memory_resource *parent, allocator_with_fit_mode::fit_mode fit) {
     if (!parent) parent = std::pmr::get_default_resource();
 
-    void *memory = parent->allocate(control_block::metadata_size + space_size);
+    void *memory = parent->allocate(control_block_view::metadata_size + space_size);
     if (!memory) return nullptr;
 
-    control_block ctrl(memory);
+    control_block_view ctrl(memory);
     ctrl.parent_allocator() = parent;
     ctrl.fit_mode() = fit;
     ctrl.space_size() = space_size;
     new(&ctrl.mutex()) std::mutex();
     ctrl.root() = nullptr;
 
-    if (space_size >= block::free_meta_size) {
-        block initial(ctrl.arena_begin());
-        initial.set_size(space_size);
+    if (space_size >= block_view::free_meta_size) {
+        block_view initial(ctrl.arena_begin());
+        initial.size() = space_size;
         initial.set_occupied(false);
         initial.set_color(rb_color::black);
-        initial.set_left(nullptr);
-        initial.set_right(nullptr);
-        initial.set_parent(nullptr);
-        initial.set_next(nullptr);
+        initial.left() = nullptr;
+        initial.right() = nullptr;
+        initial.parent() = nullptr;
+        initial.next() = nullptr;
         ctrl.root() = ctrl.arena_begin();
     }
 
@@ -492,16 +429,14 @@ void *create_storage(size_t space_size, std::pmr::memory_resource *parent, alloc
 void destroy_storage(void *&memory) noexcept {
     if (!memory) return;
 
-    control_block ctrl(memory);
+    control_block_view ctrl(memory);
     ctrl.mutex().~mutex();
 
     auto *parent = ctrl.parent_allocator();
-    parent->deallocate(memory, control_block::metadata_size + ctrl.space_size());
+    parent->deallocate(memory, control_block_view::metadata_size + ctrl.space_size());
 
     memory = nullptr;
 }
-
-} // namespace
 
 allocator_red_black_tree::~allocator_red_black_tree() {
     destroy_storage(_trusted_memory);
@@ -532,23 +467,23 @@ allocator_red_black_tree::allocator_red_black_tree(const allocator_red_black_tre
     if (!other._trusted_memory) return;
 
     auto *other_memory = const_cast<void *>(other._trusted_memory);
-    control_block source(other_memory);
+    control_block_view source(other_memory);
     std::lock_guard lock(source.mutex());
 
     _trusted_memory = create_storage(source.space_size(), source.parent_allocator(), source.fit_mode());
 
-    control_block target(_trusted_memory);
+    control_block_view target(_trusted_memory);
     std::memcpy(target.arena_begin(), source.arena_begin(), source.space_size());
     target.root() = nullptr;
 
     for (auto it = rb_iterator(_trusted_memory); it != rb_iterator(); ++it) {
-        block blk(*it);
+        block_view blk(*it);
         if (blk.occupied()) continue;
 
-        blk.set_left(nullptr);
-        blk.set_right(nullptr);
-        blk.set_parent(nullptr);
-        blk.set_next(nullptr);
+        blk.left() = nullptr;
+        blk.right() = nullptr;
+        blk.parent() = nullptr;
+        blk.next() = nullptr;
         insert_node(target, blk.raw());
     }
 }
@@ -566,39 +501,39 @@ bool allocator_red_black_tree::do_is_equal(const std::pmr::memory_resource &othe
 }
 
 void *allocator_red_black_tree::do_allocate_sm(size_t size) {
-    control_block ctrl(_trusted_memory);
+    control_block_view ctrl(_trusted_memory);
     std::lock_guard lock(ctrl.mutex());
 
-    const size_t required_total = size + block::occupied_meta_size;
+    const size_t required_total = size + block_view::occupied_meta_size;
     void *selected = find_block(ctrl, required_total, ctrl.fit_mode());
     if (!selected) throw std::bad_alloc();
 
     delete_node(ctrl, selected);
 
-    block selected_block(selected);
+    block_view selected_block(selected);
     const size_t selected_size = selected_block.size();
 
-    if (selected_size >= required_total + block::free_meta_size + 1) {
+    if (selected_size >= required_total + block_view::free_meta_size + 1) {
         void *remaining_ptr = byte_ptr(selected) + required_total;
         const size_t remaining_size = selected_size - required_total;
 
-        block remaining(remaining_ptr);
-        remaining.set_size(remaining_size);
+        block_view remaining(remaining_ptr);
+        remaining.size() = remaining_size;
         remaining.set_occupied(false);
         remaining.set_color(rb_color::black);
-        remaining.set_left(nullptr);
-        remaining.set_right(nullptr);
-        remaining.set_parent(nullptr);
-        remaining.set_next(nullptr);
+        remaining.left() = nullptr;
+        remaining.right() = nullptr;
+        remaining.parent() = nullptr;
+        remaining.next() = nullptr;
 
         insert_node(ctrl, remaining_ptr);
-        selected_block.set_size(required_total);
+        selected_block.size() = required_total;
     }
 
     selected_block.set_occupied(true);
     selected_block.set_color(rb_color::black);
-    selected_block.set_left(nullptr);
-    selected_block.set_right(nullptr);
+    selected_block.left() = nullptr;
+    selected_block.right() = nullptr;
 
     return selected_block.payload();
 }
@@ -606,19 +541,18 @@ void *allocator_red_black_tree::do_allocate_sm(size_t size) {
 void allocator_red_black_tree::do_deallocate_sm(void *at) {
     if (!at) return;
 
-    control_block ctrl(_trusted_memory);
+    control_block_view ctrl(_trusted_memory);
     std::lock_guard lock(ctrl.mutex());
 
-    block current = block::from_payload(at);
+    block_view current = block_view::from_payload(at);
     current.set_occupied(false);
 
     auto *arena_begin = ctrl.arena_begin();
     auto *arena_end = ctrl.arena_end();
 
-    // Find previous block
     void *prev_ptr = nullptr;
     for (auto *it = arena_begin; it && it < byte_ptr(current.raw());) {
-        block it_block(it);
+        block_view it_block(it);
         auto *next = byte_ptr(it) + it_block.size();
         if (next == byte_ptr(current.raw())) {
             prev_ptr = it;
@@ -628,46 +562,43 @@ void allocator_red_black_tree::do_deallocate_sm(void *at) {
         it = next;
     }
 
-    // Find next block
     auto *next_ptr = byte_ptr(current.raw()) + current.size();
     if (next_ptr >= arena_end) next_ptr = nullptr;
 
-    // Merge with next
     if (next_ptr) {
-        block next_block(next_ptr);
+        block_view next_block(next_ptr);
         if (!next_block.occupied()) {
             delete_node(ctrl, next_ptr);
-            current.set_size(current.size() + next_block.size());
+            current.size() += next_block.size();
         }
     }
 
-    // Merge with previous
     if (prev_ptr) {
-        block prev_block(prev_ptr);
+        block_view prev_block(prev_ptr);
         if (!prev_block.occupied()) {
             delete_node(ctrl, prev_ptr);
-            prev_block.set_size(prev_block.size() + current.size());
+            prev_block.size() += current.size();
             current = prev_block;
         }
     }
 
     current.set_color(rb_color::black);
-    current.set_left(nullptr);
-    current.set_right(nullptr);
-    current.set_parent(nullptr);
-    current.set_next(nullptr);
+    current.left() = nullptr;
+    current.right() = nullptr;
+    current.parent() = nullptr;
+    current.next() = nullptr;
 
     insert_node(ctrl, current.raw());
 }
 
 void allocator_red_black_tree::set_fit_mode(allocator_with_fit_mode::fit_mode mode) {
-    control_block ctrl(_trusted_memory);
+    control_block_view ctrl(_trusted_memory);
     std::lock_guard lock(ctrl.mutex());
     ctrl.fit_mode() = mode;
 }
 
 std::vector<allocator_test_utils::block_info> allocator_red_black_tree::get_blocks_info() const {
-    control_block ctrl(_trusted_memory);
+    control_block_view ctrl(_trusted_memory);
     std::lock_guard lock(ctrl.mutex());
     return get_blocks_info_inner();
 }
@@ -688,14 +619,13 @@ allocator_red_black_tree::rb_iterator allocator_red_black_tree::end() const noex
     return {};
 }
 
-// Iterator implementation
 allocator_red_black_tree::rb_iterator::rb_iterator()
     : _block_ptr(nullptr), _trusted(nullptr) {}
 
 allocator_red_black_tree::rb_iterator::rb_iterator(void *trusted)
     : _block_ptr(nullptr), _trusted(trusted) {
     if (_trusted) {
-        control_block ctrl(_trusted);
+        control_block_view ctrl(_trusted);
         if (ctrl.arena_begin() < ctrl.arena_end()) {
             _block_ptr = ctrl.arena_begin();
         }
@@ -713,8 +643,8 @@ bool allocator_red_black_tree::rb_iterator::operator!=(const rb_iterator &other)
 allocator_red_black_tree::rb_iterator &allocator_red_black_tree::rb_iterator::operator++() & noexcept {
     if (!_block_ptr || !_trusted) return *this;
 
-    control_block ctrl(_trusted);
-    block blk(_block_ptr);
+    control_block_view ctrl(_trusted);
+    block_view blk(_block_ptr);
     void *next = byte_ptr(_block_ptr) + blk.size();
 
     _block_ptr = (next >= ctrl.arena_end()) ? nullptr : next;
@@ -728,7 +658,7 @@ allocator_red_black_tree::rb_iterator allocator_red_black_tree::rb_iterator::ope
 }
 
 size_t allocator_red_black_tree::rb_iterator::size() const noexcept {
-    return _block_ptr ? block(_block_ptr).size() : 0;
+    return _block_ptr ? block_view(_block_ptr).size() : 0;
 }
 
 void *allocator_red_black_tree::rb_iterator::operator*() const noexcept {
@@ -736,5 +666,5 @@ void *allocator_red_black_tree::rb_iterator::operator*() const noexcept {
 }
 
 bool allocator_red_black_tree::rb_iterator::occupied() const noexcept {
-    return _block_ptr && block(_block_ptr).occupied();
+    return _block_ptr && block_view(_block_ptr).occupied();
 }
