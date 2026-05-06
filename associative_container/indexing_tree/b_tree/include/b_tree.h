@@ -674,12 +674,8 @@ B_tree<tkey, tvalue, compare, t>::btree_const_iterator::btree_const_iterator(
 {
     std::vector<std::pair<btree_node**, size_t>> path;
     
-    auto temp = it._path;
-    
-    while (!temp.empty()) {
+    for (auto temp = it._path; !temp.empty(); temp.pop()) {
         path.push_back(temp.top());
-        
-        temp.pop();
     }
 
     for (auto reverse_iterator = path.rbegin(); reverse_iterator != path.rend(); ++reverse_iterator) {
@@ -705,19 +701,24 @@ template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t
 typename B_tree<tkey, tvalue, compare, t>::btree_const_iterator&
 B_tree<tkey, tvalue, compare, t>::btree_const_iterator::operator++()
 {
-    btree_iterator it;
+    btree_iterator iterator;
+    
     std::vector<std::pair<btree_node* const*, size_t>> path_as_vector;
-    auto temp = _path;
-    while (!temp.empty()) {
+    
+    for (auto temp = _path; !temp.empty(); temp.pop()) {
         path_as_vector.push_back(temp.top());
-        temp.pop();
     }
-    for (auto rit = path_as_vector.rbegin(); rit != path_as_vector.rend(); ++rit) {
-        it._path.push({const_cast<btree_node**>(rit->first), rit->second});
+    
+    for (auto reverse_iterator = path_as_vector.rbegin(); reverse_iterator != path_as_vector.rend(); ++reverse_iterator) {
+        iterator._path.push({const_cast<btree_node**>(reverse_iterator->first), reverse_iterator->second});
     }
-    it._index = _index;
-    ++it;
-    *this = btree_const_iterator(it);
+    
+    iterator._index = _index;
+    
+    ++iterator;
+    
+    *this = btree_const_iterator(iterator);
+    
     return *this;
 }
 
@@ -736,19 +737,24 @@ template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t
 typename B_tree<tkey, tvalue, compare, t>::btree_const_iterator&
 B_tree<tkey, tvalue, compare, t>::btree_const_iterator::operator--()
 {
-    btree_iterator it;
+    btree_iterator iterator;
+    
     std::vector<std::pair<btree_node* const*, size_t>> path_as_vector;
-    auto temp = _path;
-    while (!temp.empty()) {
+    
+    for (auto temp = _path; !temp.empty(); temp.pop()) {
         path_as_vector.push_back(temp.top());
-        temp.pop();
     }
-    for (auto rit = path_as_vector.rbegin(); rit != path_as_vector.rend(); ++rit) {
-        it._path.push({const_cast<btree_node**>(rit->first), rit->second});
+
+    for (auto reverse_iterator = path_as_vector.rbegin(); reverse_iterator != path_as_vector.rend(); ++reverse_iterator) {
+        iterator._path.push({const_cast<btree_node**>(reverse_iterator->first), reverse_iterator->second});
     }
-    it._index = _index;
-    --it;
-    *this = btree_const_iterator(it);
+    
+    iterator._index = _index;
+    
+    --iterator;
+
+    *this = btree_const_iterator(iterator);
+    
     return *this;
 }
 
@@ -947,12 +953,8 @@ B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator::btree_const_reve
 {
     std::vector<std::pair<btree_node**, size_t>> path;
     
-    auto temp = it._path;
-    
-    while (!temp.empty()) {
+    for (auto temp = it._path; !temp.empty(); temp.pop()) {
         path.push_back(temp.top());
-
-        temp.pop();
     }
 
     for (auto reverse_iterator = path.rbegin(); reverse_iterator != path.rend(); ++reverse_iterator) {
@@ -1403,6 +1405,7 @@ B_tree<tkey, tvalue, compare, t>::emplace(Args&&... args)
     tkey key = data.first;
 
     auto existed = find(data.first);
+
     if (existed != end()) {
         return {existed, false};
     }
@@ -1411,8 +1414,10 @@ B_tree<tkey, tvalue, compare, t>::emplace(Args&&... args)
         _root = _allocator.new_object<btree_node>();
         _root->_keys.push_back(std::move(data));
         ++_size;
+        
         std::stack<std::pair<btree_node**, size_t>> path;
         path.push({&_root, 0});
+        
         return {btree_iterator(path, 0), true};
     }
 
@@ -1420,19 +1425,22 @@ B_tree<tkey, tvalue, compare, t>::emplace(Args&&... args)
     btree_node* current = _root;
 
     while (!current->_pointers.empty()) {
-        const size_t idx = static_cast<size_t>(std::lower_bound(current->_keys.begin(), current->_keys.end(), data.first,
+        const size_t index = static_cast<size_t>(std::lower_bound(current->_keys.begin(), current->_keys.end(), data.first,
             [this](const tree_data_type& item, const tkey& key) {
                 return compare_keys(item.first, key);
             }) - current->_keys.begin());
-        path.push_back({current, idx});
-        current = current->_pointers[idx];
+
+        path.push_back({current, index});
+        
+        current = current->_pointers[index];
     }
 
-    const size_t insert_idx = static_cast<size_t>(std::lower_bound(current->_keys.begin(), current->_keys.end(), data.first,
+    const size_t insert_index = static_cast<size_t>(std::lower_bound(current->_keys.begin(), current->_keys.end(), data.first,
         [this](const tree_data_type& item, const tkey& key) {
             return compare_keys(item.first, key);
         }) - current->_keys.begin());
-    current->_keys.insert(current->_keys.begin() + static_cast<ptrdiff_t>(insert_idx), std::move(data));
+    
+    current->_keys.insert(current->_keys.begin() + static_cast<ptrdiff_t>(insert_index), std::move(data));
     ++_size;
 
     while (current->_keys.size() > maximum_keys_in_node) {
@@ -1447,6 +1455,7 @@ B_tree<tkey, tvalue, compare, t>::emplace(Args&&... args)
             for (size_t i = t + 1; i < current->_pointers.size(); ++i) {
                 right->_pointers.push_back(current->_pointers[i]);
             }
+
             current->_pointers.resize(t + 1);
         }
 
@@ -1457,14 +1466,19 @@ B_tree<tkey, tvalue, compare, t>::emplace(Args&&... args)
             new_root->_keys.push_back(median);
             new_root->_pointers.push_back(current);
             new_root->_pointers.push_back(right);
+
             _root = new_root;
+            
             break;
         }
 
         auto [parent, parent_idx] = path.back();
+        
         path.pop_back();
+        
         parent->_keys.insert(parent->_keys.begin() + static_cast<ptrdiff_t>(parent_idx), median);
         parent->_pointers.insert(parent->_pointers.begin() + static_cast<ptrdiff_t>(parent_idx + 1), right);
+        
         current = parent;
     }
 
@@ -1584,14 +1598,16 @@ B_tree<tkey, tvalue, compare, t>::erase(const tkey& key)
     items.reserve(_size > 0 ? _size - 1 : 0);
 
     const compare& cmp = static_cast<const compare&>(*this);
-    for (auto it = begin(); it != end(); ++it) {
-        if (!cmp(it->first, key) && !cmp(key, it->first)) {
+    for (auto tmp_iterator = begin(); tmp_iterator != end(); ++tmp_iterator) {
+        if (!cmp(tmp_iterator->first, key) && !cmp(key, tmp_iterator->first)) {
             continue;
         }
-        items.emplace_back(it->first, it->second);
+
+        items.emplace_back(tmp_iterator->first, tmp_iterator->second);
     }
 
     clear();
+    
     auto insert_rebuild = [this](tree_data_type&& data) {
         if (_root == nullptr) {
             _root = _allocator.new_object<btree_node>();
