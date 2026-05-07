@@ -13,21 +13,7 @@ class allocator_red_black_tree final:
 {
 
 private:
-
-    enum class block_color : unsigned char
-    { RED, BLACK };
-
-    struct block_data
-    {
-        bool occupied : 4;
-        block_color color : 4;
-    };
-
     void *_trusted_memory;
-
-    static constexpr const size_t allocator_metadata_size = sizeof(allocator_dbg_helper*) + sizeof(fit_mode) + sizeof(size_t) + sizeof(std::mutex) + sizeof(void*);
-    static constexpr const size_t occupied_block_metadata_size = sizeof(block_data) + 3 * sizeof(void*);
-    static constexpr const size_t free_block_metadata_size = sizeof(block_data) + 5 * sizeof(void*);
 
 public:
     
